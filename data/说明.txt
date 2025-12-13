@@ -1,0 +1,34 @@
+This dataset is provided by Alimama
+
+raw_sample
+We randomly sampled 1140000 users from the website of Taobao for 8 days of ad display / click logs (26 million records) to form the original sample skeleton. Field description is as follows:
+(1) user: User ID(int);
+(2) timestamp: time stamp(Bigint, 1494032110 stands for 2017-05-06 08:55:10); (3) adgroupid: adgroup ID(int);
+(4) pid: scenario;
+(5) noclk: 1 for not click, 0 for click;
+We used 7 days’s samples as training samples (20170506-20170512), and the last day’s samples as test samples (20170513).
+
+ad_feature
+This data set covers the basic information of all ads in rawsample. Field description is as follows: (1) adgroupid：Ad ID(int) ;
+(2) cateid：category ID; (3) campaignid：campaign ID;
+(4) brand：brand ID;
+(5) customer_id: Advertiser ID;
+One of the ad ID corresponds to an item, an item belongs to a category, an item belongs to a brand.
+
+user_profile
+This data set covers the basic information of 1060000 users in rawsample.. Field description is as follows: (1) userid: user ID; (2) cmssegid: Micro group ID;
+(3) cmsgroupid: cmsgroupid;
+(4) finalgendercode: gender 1 for male , 2 for female
+(5) agelevel: agelevel
+(6) pvaluelevel: Consumption grade, 1: low, 2: mid, 3: high (7) shoppinglevel: Shopping depth, 1: shallow user, 2: moderate user, 3: depth user
+(8) occupation: Is the college student 1: yes, 0: no?
+(9) newuserclasslevel: City level This data set covers the shopping behavior in 22 days of all users in rawsample(totally seven hundred million records). Field description is as follows:
+(1) nick: User ID(int);
+(2) time_stamp: time stamp(Bigint, 1494032110 stands for 2017-05-06 08:55:10)；
+(3) cate: category ID(int);
+Here if we use userID and timestamp as primary key, we will find a lot of duplicate records. This is because the behavior of different types of the data are collected from different departments and when packaged together, there are small deviations (i.e. the same two timestamps may be two different time with a relatively small difference).
+
+Reference and Related Publications
+
+Gai K, Zhu X, Li H, et al. Learning Piece-wise Linear Models from Large Scale Data for Ad Click Prediction[J]. arXiv preprint arXiv:1704.05194, 2017.
+Guorui Zhou, Chengru Song, Xiaoqiang Zhu, et al. Deep Interest Network for Click-Through Rate Prediction.https://arxiv.org/abs/1706.06978.

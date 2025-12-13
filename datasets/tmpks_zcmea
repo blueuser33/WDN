@@ -1,0 +1,3 @@
+eval "$(/data/Anaconda/bin/conda shell.posix hook)"
+conda activate  /data/Anaconda/envs/py311
+python /home/hello/.pycharm_helpers/pydev/pydevd.py --multiprocess --qt-support=auto --client localhost --port 40699 --file /data/zsm/case01/datasets/epanet_data.py

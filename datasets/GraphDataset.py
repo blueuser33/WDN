@@ -4,14 +4,12 @@ from torch_geometric.data import Data, Dataset
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
-from epanet_data import EpytHelper
-import pandas as pd
 class WDNDataset(Dataset):
     def __init__(self, raw_data,
                  lookback=12,  # 输入过去多少个时间步 (例如1小时: 12 * 5min)
                  horizon=1,  # 预测未来多少个时间步
                  mode='train',  # 'train', 'val', 'test'
-                 split_ratio=[0.7, 0.1, 0.2],
+                 split_ratio=[0.9, 0.1],
                  scaler=None):  # 传入已有的scaler以保证训练/测试一致性
         super().__init__()
 
@@ -46,7 +44,7 @@ class WDNDataset(Dataset):
         elif mode == 'val':
             self.time_indices = range(train_end, val_end - lookback - horizon)
         elif mode == 'test':
-            self.time_indices = range(val_end, total_time - lookback - horizon)
+            self.time_indices = range(train_end, val_end - lookback - horizon)
 
         # 3. 数据归一化处理
         # 如果是训练集，我们需要fit scaler；如果是验证/测试集，我们使用传入的scaler
@@ -134,14 +132,15 @@ class WDNDataset(Dataset):
 
         y_p = self.pressures[t + self.lookback: t + self.lookback + self.horizon, :].T
         y_f = self.flows[t + self.lookback: t + self.lookback + self.horizon, :].T
-
+        y_d = self.demands[t + self.lookback: t + self.lookback + self.horizon, :].T
         # PyG 的 Data 对象通常只能持有一个 y，或者我们可以自定义属性
         # 这里我们将 y 设为压力，y_flow 设为额外属性
         data = Data(x=x,
                     edge_index=self.edge_index,
                     edge_attr=edge_attr,
                     y=y_p,
-                    y_flow=y_f)
+                    y_flow=y_f,
+                    y_demand=y_d)
 
         return data
 

@@ -8,7 +8,6 @@ import argparse
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 # --- 引入项目模块 ---
-# 请确保路径正确，如果不正确请修改 sys.path 或 import 路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from model.STGCN import STGCNChebGraphConv
@@ -16,9 +15,8 @@ from datasets.epanet_data import EpytHelper
 from datasets.stgcn_dataset import STGCNDataset
 from utils.graph_utils import get_adj_from_epyt, get_normalized_adj, generate_cheb_poly
 
-# ================= 配置参数 (需与训练时一致) =================
 INP_PATH = '/data/zsm/case01/data/d-town.inp'
-MODEL_PATH = '/data/zsm/case01/models/StgcnDtown.pth'  # 修改为你保存的模型路径
+MODEL_PATH = '/data/zsm/case01/models/StgcnDtown.pth'
 HRS = 168
 LOOKBACK = 12
 HORIZON = 3
@@ -26,7 +24,6 @@ BATCH_SIZE = 32
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-# 这里的参数必须和 train_STGCN.py 里的 args 一模一样
 class Config:
     def __init__(self):
         self.n_his = LOOKBACK
@@ -36,8 +33,8 @@ class Config:
         self.act_func = 'glu'
         self.graph_conv_type = 'cheb_graph_conv'
         self.enable_bias = True
-        self.droprate = 0.0  # 测试时 Dropout 设为 0
-        self.gso_type = 'cheb'  # 假设训练时用的是 cheb
+        self.droprate = 0.0
+        self.gso_type = 'cheb'
 
 
 def evaluate_and_plot():
@@ -45,61 +42,48 @@ def evaluate_and_plot():
     args = Config()
 
     # 1. 初始化数据环境
-    # -----------------------------------------------------------
     print("1. Loading Data...")
     sim = EpytHelper(INP_PATH, hrs=HRS)
     raw_data = sim.get_raw_data()
     num_nodes = raw_data['pressures'].shape[1]
     print(f"Total Nodes: {num_nodes}")
 
-    # 2. 准备 Scaler (从训练集获取)
-    # -----------------------------------------------------------
+    # 2. 准备 Scaler
     print("Preparing Scaler (from Train set)...")
-    # 创建训练集对象只为了 fit scaler
     train_ds = STGCNDataset(sim, LOOKBACK, HORIZON, 'train')
-    # 获取 scalers 字典 {'pressure': p_scaler, 'demand': d_scaler}
     scalers = train_ds.get_scalers()
-    p_scaler = scalers['pressure']  # 我们只关心压力的反归一化
+    p_scaler = scalers['pressure']
 
     # 3. 准备测试集
-    # -----------------------------------------------------------
     print("Preparing Test Set...")
     test_ds = STGCNDataset(sim, LOOKBACK, HORIZON, 'test', scaler=scalers)
     test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, drop_last=False)
 
-    # 4. 重建图结构 (GSO) - 必须与训练完全一致
-    # -----------------------------------------------------------
+    # 4. 重建图结构
     print("Rebuilding Graph Structure...")
     adj = get_adj_from_epyt(sim)
     norm_adj = get_normalized_adj(adj)
-
     if args.graph_conv_type == 'cheb_graph_conv':
-        # 这里假设使用 train_STGCN.py 最后的修正版 (直接取切比雪夫多项式的第1项作为 L_tilde)
         cheb_polys = generate_cheb_poly(norm_adj, 2)
-        gso_numpy = cheb_polys[1]  # 取 L_tilde, 形状 [N, N]
+        gso_numpy = cheb_polys[1]
         gso = torch.from_numpy(gso_numpy).float().to(DEVICE)
     else:
         gso = torch.from_numpy(norm_adj).float().to(DEVICE)
-
     setattr(args, 'gso', gso)
 
     # 5. 初始化模型 & 加载权重
-    # -----------------------------------------------------------
-    # 重构 Blocks (必须与训练代码中的 blocks 一致)
-    # 结构: [Input], [In, Mid, Out], [In, Mid, Out], [FC_In, FC_Out], [Horizon]
     blocks = [
-        [2],  # Input: Pressure + Demand
-        [64, 32, 64],  # ST-Conv1
-        [64, 32, 64],  # ST-Conv2
-        [128, 64],  # OutputBlock FC Hidden
-        [HORIZON]  # Output Horizon
+        [2],
+        [64, 32, 64],
+        [64, 32, 64],
+        [128, 64],
+        [HORIZON]
     ]
 
     print("Initializing Model...")
     model = STGCNChebGraphConv(args, blocks, num_nodes).to(DEVICE)
 
     if os.path.exists(MODEL_PATH):
-        # map_location 确保在 CPU 机器上也能加载 GPU 模型
         model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
         print("Model weights loaded successfully.")
     else:
@@ -108,99 +92,111 @@ def evaluate_and_plot():
     model.eval()
 
     # 6. 推理循环
-    # -----------------------------------------------------------
-    preds_list = []
-    targets_list = []
-
     print("Running Inference...")
+    all_preds_norm = []
+    all_targets_norm = []
+
     with torch.no_grad():
         for x, y in test_loader:
             x = x.to(DEVICE)  # [B, 2, T, N]
-            y = y.to(DEVICE)  # [B, Horizon, N]
+            y = y.to(DEVICE)  # [B, H, N]
 
-            # Forward
-            # Output Shape: [Batch, Horizon, 1, Nodes]
-            output = model(x)
-
-            # 挤压维度: [B, H, 1, N] -> [B, H, N]
+            output = model(x)  # [B, H, 1, N]
             if output.dim() == 4:
-                pred = output.squeeze(2)
+                pred = output.squeeze(2)  # [B, H, N]
             else:
                 pred = output
 
-            # 我们取 Horizon 的第 0 步 (t+1) 进行评估
-            pred_t1 = pred[:, 0, :]  # [B, N]
-            target_t1 = y[:, 0, :]  # [B, N]
+            all_preds_norm.append(pred.cpu().numpy())
+            all_targets_norm.append(y.cpu().numpy())
 
-            preds_list.append(pred_t1.cpu().numpy())
-            targets_list.append(target_t1.cpu().numpy())
+    # 拼接: [Total_Samples, Horizon, Nodes]
+    all_preds_norm = np.concatenate(all_preds_norm, axis=0)
+    all_targets_norm = np.concatenate(all_targets_norm, axis=0)
 
-    # 拼接所有 Batch
-    # Shape: [Total_Test_Samples, Nodes]
-    all_preds_norm = np.concatenate(preds_list, axis=0)
-    all_targets_norm = np.concatenate(targets_list, axis=0)
-
-    # 计算归一化后的指标
-    mse_norm = mean_squared_error(all_targets_norm, all_preds_norm)
-    print(f"Normalized MSE: {mse_norm:.6f}")
-
-    # 7. 反归一化 (还原为真实物理单位: 米)
+    # 7. 多步反归一化与 MAE 计算
     # -----------------------------------------------------------
-    print("Inverse Transforming...")
-    # Scaler 期望输入 [Samples, Nodes]
-    all_preds_real = p_scaler.inverse_transform(all_preds_norm)
-    all_targets_real = p_scaler.inverse_transform(all_targets_norm)
+    print("Evaluating Multi-step Metrics (Real Scale)...")
 
-    # 计算真实指标
-    mae_real = mean_absolute_error(all_targets_real, all_preds_real)
-    rmse_real = np.sqrt(mean_squared_error(all_targets_real, all_preds_real))
+    total_samples = all_preds_norm.shape[0]
+    horizon_steps = all_preds_norm.shape[1]
 
-    print("-" * 30)
-    print(f"Test Results (Horizon=1 / 15 mins):")
-    print(f"MAE : {mae_real:.4f} m")
-    print(f"RMSE: {rmse_real:.4f} m")
-    print("-" * 30)
+    # 存储每一步的指标
+    step_maes = []
+    step_rmses = []
 
-    # 8. 可视化绘图
+    # 用于绘图的数据 (取所有样本)
+    # Shape: [Total_Samples, Horizon, Nodes]
+    all_preds_real = np.zeros_like(all_preds_norm)
+    all_targets_real = np.zeros_like(all_targets_norm)
+
+    # 逐步处理 (Step-wise Processing)
+    for h in range(horizon_steps):
+        # 取出第 h 步的所有预测: [Total_Samples, Nodes]
+        pred_step_norm = all_preds_norm[:, h, :]
+        target_step_norm = all_targets_norm[:, h, :]
+
+        # 反归一化 (Scaler 期望输入 [N_samples, N_nodes])
+        pred_step_real = p_scaler.inverse_transform(pred_step_norm)
+        target_step_real = p_scaler.inverse_transform(target_step_norm)
+
+        # 存入大数组以便绘图或其他用途
+        all_preds_real[:, h, :] = pred_step_real
+        all_targets_real[:, h, :] = target_step_real
+
+        # 计算该步的指标
+        mae = mean_absolute_error(target_step_real, pred_step_real)
+        rmse = np.sqrt(mean_squared_error(target_step_real, pred_step_real))
+
+        step_maes.append(mae)
+        step_rmses.append(rmse)
+
+        print(f"Step {h + 1} ({(h + 1) * 5} min) -> MAE: {mae:.4f} m | RMSE: {rmse:.4f} m")
+
+    # 计算整体平均指标
+    overall_mae = np.mean(step_maes)
+    overall_rmse = np.mean(step_rmses)
+
+    print("=" * 40)
+    print(f"Overall Performance (Avg over {horizon_steps} steps):")
+    print(f"MAE : {overall_mae:.4f} m")
+    print(f"RMSE: {overall_rmse:.4f} m")
+    print("=" * 40)
+
+    # 8. 可视化绘图 (默认画第1步，也可改为其他)
     # -----------------------------------------------------------
-    plot_results(all_preds_real, all_targets_real, num_nodes)
+    # 为了绘图函数通用，我们传第0步 (t+1) 的数据进去
+    plot_results(all_preds_real[:, 0, :], all_targets_real[:, 0, :], num_nodes)
 
 
 def plot_results(preds, targets, num_nodes):
     """
-    preds, targets: shape [Time, Nodes]
+    preds, targets: shape [Time, Nodes] (已经反归一化)
     """
-    # 随机选择 3 个节点
-    np.random.seed(2)
+    np.random.seed(42)
+    # 随机选点或指定点
     plot_nodes = np.random.choice(range(num_nodes), size=3, replace=False)
-
-    # 或者手动指定，比如查看压力波动大的节点
-    # plot_nodes = [0, 10, 20]
+    # plot_nodes = [10, 50, 100]
 
     total_time = preds.shape[0]
-    # 只画前 288 个点 (约 24 小时)，画太多看不清细节
-    plot_len = min(288, total_time)
+    plot_len = min(288, total_time)  # 画一天
 
     plt.figure(figsize=(15, 10))
 
     for i, node_id in enumerate(plot_nodes):
         plt.subplot(3, 1, i + 1)
-
-        # 真实值
         plt.plot(targets[:plot_len, node_id], label='Ground Truth', color='black', linewidth=1.5, alpha=0.7)
-        # 预测值
-        plt.plot(preds[:plot_len, node_id], label='Prediction (t+1)', color='blue', linestyle='--', linewidth=1.5)
-
+        plt.plot(preds[:plot_len, node_id], label='Prediction (t+1)', color='crimson', linestyle='--', linewidth=1.5)
         plt.title(f"Node {node_id} Pressure Prediction")
         plt.ylabel("Pressure (m)")
         if i == 2:
-            plt.xlabel("Time Steps (5 min intervals)")
+            plt.xlabel("Time Steps")
         plt.legend()
         plt.grid(True, alpha=0.3)
 
     plt.tight_layout()
-
-    save_path = './stgcn_prediction_result.png'
+    save_path = './figures/StgcnDtown_Eval.png'
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path)
     print(f"Plot saved to '{save_path}'")
     plt.show()
